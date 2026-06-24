@@ -1,0 +1,5 @@
+807686dd9ac4ab8981ef8ab73563bd0c  usr/bin/picam_raw
+0919734d9987a23fdf27c71e5c27e4cf  usr/lib/systemd/system/picam-raw.service
+8f010d65339f4b7bc8cb576f94139232  usr/share/doc/picam-raw/changelog.Debian.gz
+3db7f9c8162f932ad69faf24f3d6f45b  usr/share/doc/picam-raw/copyright
+bd9b2d20315509aefa5ff544169cc45c  usr/share/picam-raw/recv_raw.py

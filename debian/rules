@@ -1,0 +1,19 @@
+#!/usr/bin/make -f
+%:
+	dh $@ --buildsystem=cmake
+
+override_dh_auto_configure:
+	dh_auto_configure -- -DCMAKE_BUILD_TYPE=Release
+
+override_dh_auto_install:
+	dh_auto_install
+	install -D -m 644 picam_raw.conf \
+		debian/picam-raw/etc/picam-raw/picam_raw.conf
+	install -D -m 644 picam-raw.service \
+		debian/picam-raw/usr/lib/systemd/system/picam-raw.service
+	install -D -m 644 recv_raw.py \
+		debian/picam-raw/usr/share/picam-raw/recv_raw.py
+	install -d debian/picam-raw/var/lib/picam-raw
+
+override_dh_installsystemd:
+	dh_installsystemd --no-restart-on-upgrade --no-stop-on-upgrade

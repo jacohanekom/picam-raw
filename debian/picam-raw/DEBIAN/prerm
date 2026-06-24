@@ -1,0 +1,11 @@
+#!/bin/sh
+set -e
+case "$1" in
+    remove|purge)
+        if systemctl is-active --quiet picam-raw.service 2>/dev/null; then
+            systemctl stop picam-raw.service || true
+        fi
+        ;;
+esac
+
+exit 0

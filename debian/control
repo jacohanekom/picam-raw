@@ -1,0 +1,22 @@
+Source: picam-raw
+Section: video
+Priority: optional
+Maintainer: Jaco Hanekom <jhanekom@gmail.com>
+Build-Depends: debhelper-compat (= 13),
+               cmake,
+               pkg-config,
+               libcamera-dev
+Standards-Version: 4.6.2
+Rules-Requires-Root: no
+
+Package: picam-raw
+Architecture: arm64
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Recommends: pi-block-cpu-cores, rpicam-apps
+Description: Pi Camera 3 raw YUV420 UDP server for Raspberry Pi 5
+ Streams uncompressed YUV420 frames from multiple Pi Camera 3 modules
+ over UDP. Supports dual-stream (main + lores), instant camera switching,
+ and lux telemetry.
+ .
+ Main:  UDP :<8560>  Lores: UDP :<8561>
+ Config: /etc/picam-raw/picam_raw.conf

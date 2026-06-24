@@ -1,0 +1,39 @@
+[Unit]
+Description=Pi Camera Raw YUV420 UDP Server
+After=network.target irq-affinity.service
+Wants=irq-affinity.service
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=picam-raw
+Group=picam-raw
+
+ExecStart=/usr/bin/picam_raw --config /etc/picam-raw/picam_raw.conf
+
+Restart=on-failure
+RestartSec=3
+
+SupplementaryGroups=video render
+
+AmbientCapabilities=CAP_SYS_NICE CAP_IPC_LOCK
+CapabilityBoundingSet=CAP_SYS_NICE CAP_IPC_LOCK
+LimitRTPRIO=99
+LimitNICE=-20
+LimitMEMLOCK=infinity
+
+CPUAffinity=1
+
+NoNewPrivileges=false
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=false
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=picam-raw
+
+[Install]
+WantedBy=multi-user.target

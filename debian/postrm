@@ -1,0 +1,24 @@
+#!/bin/sh
+set -e
+case "$1" in
+    remove)
+        # Remove unit file from legacy location if present
+        rm -f /lib/systemd/system/picam-raw.service
+        systemctl daemon-reload || true
+        ;;
+    purge)
+        # Remove unit file from both locations
+        rm -f /lib/systemd/system/picam-raw.service
+        rm -f /usr/lib/systemd/system/picam-raw.service
+        systemctl daemon-reload || true
+        # Remove system user
+        if id -u picam-raw > /dev/null 2>&1; then
+            deluser --system picam-raw || true
+        fi
+        # Remove state and config directories
+        rm -rf /var/lib/picam-raw || true
+        rm -rf /etc/picam-raw || true
+        ;;
+esac
+#DEBHELPER#
+exit 0

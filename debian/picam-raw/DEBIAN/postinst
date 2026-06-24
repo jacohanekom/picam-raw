@@ -1,0 +1,30 @@
+#!/bin/sh
+set -e
+case "$1" in
+    configure)
+        if ! id -u picam-raw > /dev/null 2>&1; then
+            adduser --system --no-create-home --group \
+                    --home /nonexistent \
+                    --shell /usr/sbin/nologin \
+                    picam-raw
+        fi
+        if getent group video > /dev/null 2>&1; then
+            usermod -aG video picam-raw
+        fi
+        if getent group render > /dev/null 2>&1; then
+            usermod -aG render picam-raw
+        fi
+        chown root:picam-raw /etc/picam-raw/picam_raw.conf
+        chmod 640 /etc/picam-raw/picam_raw.conf
+        chown picam-raw:picam-raw /var/lib/picam-raw
+        chmod 750 /var/lib/picam-raw
+        ;;
+esac
+
+
+if [ "$1" = "configure" ] && [ -d /run/systemd/system ]; then
+    systemctl daemon-reload
+    systemctl enable picam-raw.service || true
+    systemctl start picam-raw.service || true
+fi
+exit 0
