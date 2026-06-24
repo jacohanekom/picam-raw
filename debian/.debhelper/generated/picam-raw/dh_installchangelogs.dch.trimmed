@@ -1,7 +1,0 @@
-picam-raw (1.0.0+202606041025-1) stable; urgency=low
-
-  * Initial release. Replaced RTSP/H.264 pipeline with raw YUV420 UDP streaming.
-  * Dual streams: main (2304x1296) on :8560, lores (640x360) on :8561.
-  * Client registration via UDP datagram; 30-second FPS console logging.
-
- -- Jaco Hanekom <jhanekom@gmail.com>  Thu, 04 Jun 2026 10:24:30 +0000
