@@ -4,7 +4,7 @@
 //   cmake -B build && cmake --build build -j4
 //   ./build/picam_raw
 
-#include "picam-raw_1_0_0_202606091310/picam_raw.hpp"
+#include "picam_raw.hpp"
 
 #include <algorithm>
 #include <cmath>
