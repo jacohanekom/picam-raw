@@ -1,0 +1,65 @@
+# Builds the picam-raw Debian package NATIVELY for arm64, using a real
+# arm64 Docker daemon (e.g. colima on Apple Silicon, which runs a genuine
+# arm64 Linux VM — no QEMU emulation involved despite the host being a
+# Mac) rather than cross-compiling from an amd64 host.
+#
+# This exists because Dockerfile.cross-arm64 (cross-compiling from amd64)
+# is blocked: mixing Debian's own arm64 packages with Raspberry Pi's
+# arm64 packages (needed for a real libcamera, not Debian's stale stock
+# one — see that file's header for the full story) makes apt's resolver
+# refuse the combination, and QEMU emulation to sidestep that wasn't
+# available on the amd64 host we tried. Building natively here avoids
+# the problem entirely: there's only ONE architecture in play, so
+# there's no foreign-arch package mixing for apt to choke on — installing
+# libcamera-dev from archive.raspberrypi.com is just a normal, single-arch
+# apt install, exactly as it would be on a real Pi.
+#
+# Usage (from this directory, on a genuinely arm64 Docker host):
+#   docker build -f Dockerfile.native-arm64 -t picam-raw-builder .
+#   docker create --name picam-raw-extract picam-raw-builder
+#   docker cp picam-raw-extract:/out ./dist
+#   docker rm picam-raw-extract
+
+FROM debian:bookworm-slim AS build
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential \
+        debhelper \
+        devscripts \
+        cmake \
+        pkg-config \
+        curl \
+        gnupg \
+        ca-certificates \
+    && curl -fsSL -o /tmp/rpi.gpg.key https://archive.raspberrypi.com/debian/raspberrypi.gpg.key \
+    && gpg --dearmor -o /usr/share/keyrings/raspberrypi.gpg /tmp/rpi.gpg.key \
+    && rm -f /tmp/rpi.gpg.key \
+    && echo 'deb [signed-by=/usr/share/keyrings/raspberrypi.gpg] https://archive.raspberrypi.com/debian/ bookworm main' \
+        > /etc/apt/sources.list.d/raspberrypi.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends libcamera-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /src
+COPY . .
+
+# Stamp a build-time version (base version + UTC date/time as a Debian
+# local-version suffix — see picam-orchestrator-go/Dockerfile.build for
+# the rationale). Timestamp is a plain contiguous digit run
+# (YYYYMMDDHHMMSS, no separator): this project's changelog already embeds
+# a compact undotted timestamp (1.0.0+202606041025-1), and dpkg compares
+# maximal digit runs as arbitrary-precision integers — a dot would end
+# that run early and make a chronologically later build compare as an
+# EARLIER version (confirmed the hard way while building
+# Dockerfile.cross-arm64). A same-style, undotted, equal-or-longer digit
+# run avoids that entirely.
+RUN set -e; \
+    BASEVER="$(dpkg-parsechangelog -S Version | sed -E 's/\+.*//')"; \
+    TS="$(date -u +%Y%m%d%H%M%S)"; \
+    DEBEMAIL="jhanekom@gmail.com" DEBFULLNAME="Jaco Hanekom" \
+        dch --newversion "${BASEVER}+${TS}-1" --distribution stable --force-distribution \
+        "Automated native arm64 build (UTC ${TS})."; \
+    dpkg-buildpackage -us -uc -b
+
+# Build artifacts land one directory above the source tree by default.
+RUN mkdir -p /out && cp /*.deb /*.changes /*.buildinfo /out/ 2>/dev/null || cp /*.deb /out/

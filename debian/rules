@@ -1,4 +1,27 @@
 #!/usr/bin/make -f
+
+DEB_BUILD_ARCH      := $(shell dpkg-architecture -qDEB_BUILD_ARCH)
+DEB_HOST_ARCH       := $(shell dpkg-architecture -qDEB_HOST_ARCH)
+DEB_HOST_MULTIARCH  := $(shell dpkg-architecture -qDEB_HOST_MULTIARCH)
+CROSS_COMPILING     := $(filter-out $(DEB_BUILD_ARCH),$(DEB_HOST_ARCH))
+
+ifneq ($(CROSS_COMPILING),)
+# Cross-compiling (e.g. building for arm64 on an amd64 host, invoked via
+# `dpkg-buildpackage -aarm64`). debhelper's own cmake buildsystem class
+# already auto-injects -DCMAKE_SYSTEM_NAME/-DCMAKE_C_COMPILER/etc. and
+# -DPKG_CONFIG_EXECUTABLE=/usr/bin/$(DEB_HOST_GNU_TYPE)-pkg-config when it
+# detects a foreign host arch — no need to duplicate any of that here.
+# That pkg-config wrapper binary isn't provided by any Debian package
+# though (confirmed: no pkg-config-aarch64-linux-gnu exists in bookworm),
+# so the build environment (see Dockerfile.cross-arm64) creates it as a
+# tiny script pointing PKG_CONFIG_LIBDIR at the target arch's multiarch
+# .pc files, per https://wiki.debian.org/CrossCompiling. This
+# PKG_CONFIG_LIBDIR export is a fallback for anything that ends up
+# invoking plain "pkg-config" directly instead of the wrapper.
+export PKG_CONFIG_LIBDIR := /usr/lib/$(DEB_HOST_MULTIARCH)/pkgconfig
+export PKG_CONFIG_PATH :=
+endif
+
 %:
 	dh $@ --buildsystem=cmake
 
