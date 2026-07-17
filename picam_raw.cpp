@@ -630,6 +630,31 @@ struct CameraImpl {
         loresLibcam  = camConfig->at(1).stream();
         mainStride_  = camConfig->at(0).stride;
         loresStride_ = camConfig->at(1).stride;
+
+        // validate() may have adjusted the requested sizes to whatever the
+        // sensor/ISP actually supports (see the "config adjusted" log
+        // above) — copyAndSend must use the size libcamera actually
+        // configured, not the originally requested camCfg.mainWidth/
+        // mainHeight, or every row gets read at the wrong offset.
+        const auto& mainSize  = camConfig->at(0).size;
+        const auto& loresSize = camConfig->at(1).size;
+        if (static_cast<int>(mainSize.width) != camCfg.mainWidth ||
+            static_cast<int>(mainSize.height) != camCfg.mainHeight)
+            logInfo("Camera " + std::to_string(camCfg.index) +
+                    " main stream resized by libcamera: requested " +
+                    std::to_string(camCfg.mainWidth) + "x" + std::to_string(camCfg.mainHeight) +
+                    ", actual " + std::to_string(mainSize.width) + "x" + std::to_string(mainSize.height));
+        if (static_cast<int>(loresSize.width) != camCfg.loresWidth ||
+            static_cast<int>(loresSize.height) != camCfg.loresHeight)
+            logInfo("Camera " + std::to_string(camCfg.index) +
+                    " lores stream resized by libcamera: requested " +
+                    std::to_string(camCfg.loresWidth) + "x" + std::to_string(camCfg.loresHeight) +
+                    ", actual " + std::to_string(loresSize.width) + "x" + std::to_string(loresSize.height));
+        camCfg.mainWidth   = static_cast<int>(mainSize.width);
+        camCfg.mainHeight  = static_cast<int>(mainSize.height);
+        camCfg.loresWidth  = static_cast<int>(loresSize.width);
+        camCfg.loresHeight = static_cast<int>(loresSize.height);
+
         logInfo("Camera " + std::to_string(camCfg.index) +
                 " strides: main=" + std::to_string(mainStride_) +
                 " lores=" + std::to_string(loresStride_));
