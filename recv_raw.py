@@ -38,6 +38,10 @@ def parse_args():
                    help="Local UDP port to bind (0 = OS assigns)")
     p.add_argument("--timeout", type=float, default=5.0,
                    help="Seconds between re-registration pings")
+    p.add_argument("--save", metavar="PATH",
+                   help="Write the first decoded frame to PATH (e.g. frame.png) "
+                        "and exit, instead of opening a display window. Use this "
+                        "on a headless Pi with no display attached.")
     return p.parse_args()
 
 
@@ -102,11 +106,17 @@ def main():
             yuv = yuv.reshape((args.height * 3 // 2, args.width))
             bgr = cv2.cvtColor(yuv, cv2.COLOR_YUV2BGR_I420)
 
+            if args.save:
+                cv2.imwrite(args.save, bgr)
+                print(f"Frame {frame_seq}: saved {args.width}x{args.height} to {args.save}")
+                break
+
             cv2.imshow("picam-raw", bgr)
             if cv2.waitKey(1) & 0xFF == ord("q"):
                 break
 
-    cv2.destroyAllWindows()
+    if not args.save:
+        cv2.destroyAllWindows()
     sock.close()
 
 
