@@ -732,6 +732,16 @@ struct CameraImpl {
         }
 
         // Copy one stream's DMA buffer to a RawFrame and push to the server.
+        //
+        // libcamera pads each captured row up to `stride` bytes, which can
+        // exceed the logical `w` (alignment requirements differ per stream
+        // — e.g. the unscaled main tap vs. the ISP-resized lores tap — so
+        // stride == w is not guaranteed for either). The wire protocol
+        // (see file header / README) has no stride field and promises
+        // tightly packed width*height planes, so padding must be stripped
+        // here, row by row, rather than bulk-copying stride*height bytes:
+        // shipping the padding as if it were pixel data shifts every row
+        // after the first, producing diagonal tearing on the client.
         auto copyAndSend = [&](libcamera::Stream*    lcStream,
                                int                   w, int h, int stride,
                                UdpRawServer*         server) {
@@ -750,32 +760,44 @@ struct CameraImpl {
                                 planes[0].fd.get(), 0);
             if (base == MAP_FAILED) return;
 
-            const uint8_t* buf    = static_cast<const uint8_t*>(base);
-            const size_t   yBytes  = static_cast<size_t>(stride * h);
-            const size_t   uvBytes = static_cast<size_t>((stride / 2) * (h / 2));
+            const uint8_t* buf      = static_cast<const uint8_t*>(base);
+            const int      uvStride = stride / 2;
+            const int      uvWidth  = w / 2;
+            const int      uvHeight = h / 2;
+            const size_t   yBytes   = static_cast<size_t>(w) * h;
+            const size_t   uvBytes  = static_cast<size_t>(uvWidth) * uvHeight;
 
             RawFrame rf;
             rf.width       = w;
             rf.height      = h;
-            rf.stride      = stride;
+            rf.stride      = w;
             rf.timestampUs = tsUs;
             rf.cameraIndex = camCfg.index;
             rf.cameraLabel = camCfg.label;
             rf.data.resize(yBytes + uvBytes * 2, 128);
 
-            // Copy Y, U, V planes
+            auto copyPlane = [&](size_t srcOffset, size_t srcLen,
+                                  uint8_t* dst, int rowBytes, int rows,
+                                  int srcStride) {
+                for (int y = 0; y < rows; ++y) {
+                    size_t srcRowOff = srcOffset + static_cast<size_t>(y) * srcStride;
+                    if (srcRowOff + static_cast<size_t>(rowBytes) > srcOffset + srcLen)
+                        break;
+                    memcpy(dst + static_cast<size_t>(y) * rowBytes,
+                           buf + srcRowOff, rowBytes);
+                }
+            };
+
+            // Copy Y, U, V planes, stripping stride padding to `w`/`uvWidth`
             if (planes.size() > 0)
-                memcpy(rf.data.data(),
-                       buf + planes[0].offset,
-                       std::min(yBytes, static_cast<size_t>(planes[0].length)));
+                copyPlane(planes[0].offset, planes[0].length,
+                          rf.data.data(), w, h, stride);
             if (planes.size() > 1)
-                memcpy(rf.data.data() + yBytes,
-                       buf + planes[1].offset,
-                       std::min(uvBytes, static_cast<size_t>(planes[1].length)));
+                copyPlane(planes[1].offset, planes[1].length,
+                          rf.data.data() + yBytes, uvWidth, uvHeight, uvStride);
             if (planes.size() > 2)
-                memcpy(rf.data.data() + yBytes + uvBytes,
-                       buf + planes[2].offset,
-                       std::min(uvBytes, static_cast<size_t>(planes[2].length)));
+                copyPlane(planes[2].offset, planes[2].length,
+                          rf.data.data() + yBytes + uvBytes, uvWidth, uvHeight, uvStride);
 
             ::munmap(base, mapSize);
 
