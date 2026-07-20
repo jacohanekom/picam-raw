@@ -968,6 +968,61 @@ static bool parseBool(const std::string& v) {
     return l == "true" || l == "1" || l == "yes";
 }
 
+// Baseline main/lores dimensions for newly-constructed CameraConfig
+// entries, overwritten by loadSharedStreamConfig() below before any
+// camera gets constructed. Kept as file-scope state (rather than
+// threaded through function signatures) since loadConfigFile()'s
+// per-camera-section default construction needs them too.
+static int g_sharedMainWidth   = 2304;
+static int g_sharedMainHeight  = 1296;
+static int g_sharedLoresWidth  = 640;
+static int g_sharedLoresHeight = 360;
+
+// Reads /etc/aipicam/streams.conf's [stream] section — the single
+// source of truth shared with picam-orchestrator/picam-hailo/
+// picam-recorder, since picam-raw's wire protocol carries no
+// width/height field and every reader must already agree with what's
+// actually sent. Applied before picam_raw.conf and CLI args are
+// parsed, so both can still explicitly override for local debugging,
+// but a stock install with an unmodified picam_raw.conf always
+// reflects this shared file instead of a second, independently
+// hand-copied default that can silently drift from it.
+static void loadSharedStreamConfig() {
+    const std::string path = "/etc/aipicam/streams.conf";
+    std::ifstream f(path);
+    if (!f.is_open()) {
+        logInfo("Shared stream config not found: " + path + " — using compiled-in defaults");
+        return;
+    }
+    logInfo("Loading shared stream config from: " + path);
+    std::string line, section;
+    while (std::getline(f, line)) {
+        auto hash = line.find('#');
+        if (hash != std::string::npos) line = line.substr(0, hash);
+        line = trim(line);
+        if (line.empty()) continue;
+        if (line.front() == '[' && line.back() == ']') {
+            section = trim(line.substr(1, line.size() - 2));
+            continue;
+        }
+        if (section != "stream") continue;
+        auto eq = line.find('=');
+        if (eq == std::string::npos) continue;
+        std::string key = trim(line.substr(0, eq));
+        std::string val = trim(line.substr(eq + 1));
+        if (key.empty() || val.empty()) continue;
+
+        if      (key == "main_width")     g_sharedMainWidth      = std::stoi(val);
+        else if (key == "main_height")    g_sharedMainHeight     = std::stoi(val);
+        else if (key == "lores_width")    g_sharedLoresWidth     = std::stoi(val);
+        else if (key == "lores_height")   g_sharedLoresHeight    = std::stoi(val);
+        else if (key == "main_port")      g_config.rawMainPort   = std::stoi(val);
+        else if (key == "lores_port")     g_config.rawLoresPort  = std::stoi(val);
+        else if (key == "telemetry_port") g_config.telemetryPort = std::stoi(val);
+        else if (key == "command_port")   g_config.commandPort   = std::stoi(val);
+    }
+}
+
 static void applyCameraKV(CameraConfig& c, const std::string& rawKey,
                            const std::string& rawVal) {
     std::string key = trim(rawKey);
@@ -1044,6 +1099,10 @@ static void loadConfigFile(const std::string& path) {
                 if (camMap.find(camIdx) == camMap.end()) {
                     CameraConfig def; def.index = camIdx;
                     def.label = "cam" + std::to_string(camIdx);
+                    def.mainWidth   = g_sharedMainWidth;
+                    def.mainHeight  = g_sharedMainHeight;
+                    def.loresWidth  = g_sharedLoresWidth;
+                    def.loresHeight = g_sharedLoresHeight;
                     camMap[camIdx] = def;
                 }
             } else { section = -1; }
@@ -1092,6 +1151,12 @@ static void printUsage(const char* prog) {
     std::cerr <<
         "Usage: " << prog << " [--config FILE] [OPTION...]\n"
         "\n"
+        "Stream ports and main/lores dimensions default from the shared\n"
+        "/etc/aipicam/streams.conf (see the aipicam-config package) — the\n"
+        "single source of truth other camera-pipeline services also read,\n"
+        "since the UDP wire protocol carries no width/height field. The\n"
+        "options below still override it, for local debugging.\n"
+        "\n"
         "Config file sections:\n"
         "  [network]             — global settings\n"
         "  [camera0]             — first camera\n"
@@ -1129,8 +1194,14 @@ static void printUsage(const char* prog) {
 }
 
 bool loadConfig(int argc, char* argv[]) {
+    loadSharedStreamConfig();
+
     if (g_config.cameras.empty()) {
         CameraConfig def; def.index = 0; def.label = "cam0";
+        def.mainWidth   = g_sharedMainWidth;
+        def.mainHeight  = g_sharedMainHeight;
+        def.loresWidth  = g_sharedLoresWidth;
+        def.loresHeight = g_sharedLoresHeight;
         g_config.cameras.push_back(def);
     }
     std::string configPath = "picam_raw.conf";

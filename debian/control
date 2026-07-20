@@ -11,7 +11,7 @@ Rules-Requires-Root: no
 
 Package: picam-raw
 Architecture: arm64
-Depends: ${shlibs:Depends}, ${misc:Depends}
+Depends: ${shlibs:Depends}, ${misc:Depends}, aipicam-config
 Recommends: pi-block-cpu-cores, rpicam-apps
 Description: Pi Camera 3 raw YUV420 UDP server for Raspberry Pi 5
  Streams uncompressed YUV420 frames from multiple Pi Camera 3 modules
