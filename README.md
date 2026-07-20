@@ -81,8 +81,10 @@ Drop any `frame_seq` for which a prior `frame_seq` has already been completed
 After connecting, the server pushes newline-terminated JSON once per second:
 
 ```json
-{"lux": 312.5, "active_camera": 0}
+{"lux": 312.5, "active_camera": 0, "camera_label": "front", "utc_offset_minutes": 120}
 ```
+
+`utc_offset_minutes` is this machine's current UTC offset (east positive, DST-aware — recomputed every message), the timezone `timestamp_us` values in the raw stream's chunk headers are actually captured in. Consumers that render those timestamps as wall-clock time (e.g. picam-orchestrator's on-screen timestamp) use this instead of assuming their own system timezone matches picam-raw's.
 
 ### Command interface (TCP :8556)
 

@@ -393,12 +393,28 @@ void TelemetryServer::start() {
     thread_.detach();
 }
 
+// Current UTC offset in minutes (east positive), read fresh each call so
+// it tracks DST transitions automatically with no restart needed. Comes
+// from this machine's own system timezone (tm_gmtoff, a glibc/BSD
+// extension) — since picam-raw is the process actually reading
+// CLOCK_REALTIME for each frame's timestamp_us, this is the
+// authoritative answer to "what timezone was that timestamp captured
+// in," rather than a consumer having to assume its own system timezone
+// matches picam-raw's.
+static int currentUtcOffsetMinutes() {
+    std::time_t now = std::time(nullptr);
+    std::tm local{};
+    ::localtime_r(&now, &local);
+    return static_cast<int>(local.tm_gmtoff / 60);
+}
+
 void TelemetryServer::broadcast(float lux, int activeCam) {
     std::ostringstream ss;
     ss << std::fixed << std::setprecision(1);
     ss << "{\"lux\":" << lux
        << ",\"active_camera\":" << activeCam
        << ",\"camera_label\":\"" << g_config.cameras[activeCam].label << "\""
+       << ",\"utc_offset_minutes\":" << currentUtcOffsetMinutes()
        << "}\n";
     std::string line = ss.str();
     std::lock_guard lock(clientsMu_);
