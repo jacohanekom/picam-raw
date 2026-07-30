@@ -13,12 +13,22 @@ frame-synchronised overlays, or any pipeline that processes pixels directly.
 | Stream    | Protocol | Default port | Content                        |
 |-----------|----------|-------------|--------------------------------|
 | Main      | UDP      | 8560        | Full-res YUV420 (2304 × 1296) |
+| Mid       | UDP      | 8562        | ISP-scaled YUV420 (1920 × 1080) — optional, see below |
 | Lores     | UDP      | 8561        | Scaled YUV420 (640 × 360)     |
 | Telemetry | TCP      | 8555        | JSON: lux, active camera       |
 | Command   | TCP      | 8556        | Camera switching, status       |
 
-Both video streams use the same chunked-UDP protocol described below.
+All three video streams use the same chunked-UDP protocol described below.
 The server supports multiple simultaneous clients on each stream.
+
+**Mid is best-effort.** Unlike main/lores, it's a third simultaneous ISP
+scaling tap requested alongside them — not guaranteed to be supported on
+every camera/ISP combination. picam-raw always tries for it at startup;
+if the pipeline handler can't satisfy 3 simultaneous streams, it logs
+that clearly and falls back to serving just main+lores, with nothing
+ever sent on the mid port. Check the startup log
+(`journalctl -u picam-raw`) for "3-stream config ... not available" /
+"... invalid" to see whether your hardware got it or fell back.
 
 ---
 
@@ -176,6 +186,7 @@ Builds run on GitHub's native `ubuntu-24.04-arm` hosted runner (no QEMU), instal
 ```ini
 [network]
 raw_main_port  = 8560          # UDP port for full-resolution stream
+raw_mid_port   = 8562          # UDP port for mid stream (best-effort, see above)
 raw_lores_port = 8561          # UDP port for low-resolution stream
 telemetry_port = 8555          # TCP port for lux/camera JSON
 command_port   = 8556          # TCP port for switch/status commands
@@ -191,6 +202,8 @@ index      = 0
 label      = front
 main_width  = 2304
 main_height = 1296
+mid_width   = 1920
+mid_height  = 1080
 lores_width  = 640
 lores_height = 360
 framerate  = 30

@@ -33,6 +33,7 @@
 #include <sys/socket.h>
 #include <thread>
 #include <unistd.h>
+#include <utility>
 #include <vector>
 
 // libcamera
@@ -569,6 +570,7 @@ struct CameraImpl {
 
     std::shared_ptr<UdpRawServer> mainServer;
     std::shared_ptr<UdpRawServer> loresServer;
+    std::shared_ptr<UdpRawServer> midServer;
 
     libcamera::CameraManager*                        camMgr = nullptr;
     std::shared_ptr<libcamera::Camera>               camera;
@@ -576,15 +578,51 @@ struct CameraImpl {
     std::unique_ptr<libcamera::FrameBufferAllocator> allocator;
     libcamera::Stream*                               mainLibcam  = nullptr;
     libcamera::Stream*                               loresLibcam = nullptr;
+    // Stays nullptr if the third stream isn't supported on this
+    // hardware/pipeline handler (see setup()'s graceful-degradation
+    // fallback) -- every use of it below is guarded on that.
+    libcamera::Stream*                               midLibcam   = nullptr;
     std::vector<std::unique_ptr<libcamera::Request>> requests;
     unsigned int                                     mainStride_  = 0;
     unsigned int                                     loresStride_ = 0;
+    unsigned int                                     midStride_   = 0;
     std::optional<libcamera::ControlList>            startControls_;
     std::atomic<bool>                                planeLayoutLogged_{false};
 
     // fps tracking
     std::atomic<int>                                 frameCount_{0};
     std::chrono::steady_clock::time_point            fpsWindow_{std::chrono::steady_clock::now()};
+
+    // -----------------------------------------------------------------------
+    // Requests a plain main+lores (2-stream) libcamera configuration --
+    // the fallback setup() uses whenever a 3-stream main+lores+mid
+    // configuration isn't available on this hardware/pipeline handler.
+    // Leaves camConfig set as a side effect; returns validate()'s
+    // status (Invalid/Adjusted/Valid) for the caller to act on exactly
+    // like it would for the 3-stream attempt.
+    libcamera::CameraConfiguration::Status configureTwoStreamFallback() {
+        camConfig = camera->generateConfiguration({
+            libcamera::StreamRole::VideoRecording,
+            libcamera::StreamRole::Viewfinder
+        });
+        if (!camConfig || camConfig->size() < 2)
+            return libcamera::CameraConfiguration::Invalid;
+
+        auto& mainCfg        = camConfig->at(0);
+        mainCfg.size         = {static_cast<uint32_t>(camCfg.mainWidth),
+                                 static_cast<uint32_t>(camCfg.mainHeight)};
+        mainCfg.pixelFormat  = libcamera::formats::YUV420;
+        mainCfg.bufferCount  = 4;
+
+        auto& loresCfg       = camConfig->at(1);
+        loresCfg.size        = {static_cast<uint32_t>(camCfg.loresWidth),
+                                 static_cast<uint32_t>(camCfg.loresHeight)};
+        loresCfg.pixelFormat = libcamera::formats::YUV420;
+        loresCfg.bufferCount = 4;
+
+        camConfig->orientation = libcamera::Orientation::Rotate0;
+        return camConfig->validate();
+    }
 
     // -----------------------------------------------------------------------
     bool setup() {
@@ -604,38 +642,70 @@ struct CameraImpl {
         }
         logInfo("Camera " + std::to_string(camCfg.index) + " acquired: " + camera->id());
 
+        // Try main+lores+mid (3 streams) first -- mid is an optional,
+        // hardware-dependent extra (see CameraConfig::midWidth's own
+        // comment). Falls back to exactly the original main+lores
+        // config -- never a hard failure -- if the pipeline handler
+        // can't satisfy 3 simultaneous streams. Checked twice:
+        // generateConfiguration can itself return fewer slots than
+        // requested, or validate() can reject the combination even
+        // after nominally producing 3 slots.
+        bool haveMid = false;
+        libcamera::CameraConfiguration::Status vstatus = libcamera::CameraConfiguration::Invalid;
+
         camConfig = camera->generateConfiguration({
             libcamera::StreamRole::VideoRecording,
+            libcamera::StreamRole::Viewfinder,
             libcamera::StreamRole::Viewfinder
         });
-        if (!camConfig || camConfig->size() < 2) {
-            logError("Failed to generate dual-stream config for camera " +
-                     std::to_string(camCfg.index));
-            return false;
+        if (camConfig && camConfig->size() >= 3) {
+            auto& mainCfg        = camConfig->at(0);
+            mainCfg.size         = {static_cast<uint32_t>(camCfg.mainWidth),
+                                     static_cast<uint32_t>(camCfg.mainHeight)};
+            mainCfg.pixelFormat  = libcamera::formats::YUV420;
+            mainCfg.bufferCount  = 4;
+
+            auto& loresCfg       = camConfig->at(1);
+            loresCfg.size        = {static_cast<uint32_t>(camCfg.loresWidth),
+                                     static_cast<uint32_t>(camCfg.loresHeight)};
+            loresCfg.pixelFormat = libcamera::formats::YUV420;
+            loresCfg.bufferCount = 4;
+
+            auto& midCfg         = camConfig->at(2);
+            midCfg.size          = {static_cast<uint32_t>(camCfg.midWidth),
+                                     static_cast<uint32_t>(camCfg.midHeight)};
+            midCfg.pixelFormat   = libcamera::formats::YUV420;
+            midCfg.bufferCount   = 4;
+
+            camConfig->orientation = libcamera::Orientation::Rotate0;
+            vstatus = camConfig->validate();
+            if (vstatus != libcamera::CameraConfiguration::Invalid) {
+                haveMid = true;
+            } else {
+                logInfo("Camera " + std::to_string(camCfg.index) +
+                        ": 3-stream config (main+lores+mid) invalid, "
+                        "falling back to main+lores only");
+            }
+        } else {
+            logInfo("Camera " + std::to_string(camCfg.index) +
+                    ": 3-stream config (main+lores+mid) not available, "
+                    "falling back to main+lores only");
         }
 
-        auto& mainCfg        = camConfig->at(0);
-        mainCfg.size         = {static_cast<uint32_t>(camCfg.mainWidth),
-                                 static_cast<uint32_t>(camCfg.mainHeight)};
-        mainCfg.pixelFormat  = libcamera::formats::YUV420;
-        mainCfg.bufferCount  = 4;
+        if (!haveMid) {
+            vstatus = configureTwoStreamFallback();
+        }
 
-        auto& loresCfg       = camConfig->at(1);
-        loresCfg.size        = {static_cast<uint32_t>(camCfg.loresWidth),
-                                 static_cast<uint32_t>(camCfg.loresHeight)};
-        loresCfg.pixelFormat = libcamera::formats::YUV420;
-        loresCfg.bufferCount = 4;
-
-        camConfig->orientation = libcamera::Orientation::Rotate0;
-
-        auto vstatus = camConfig->validate();
         if (vstatus == libcamera::CameraConfiguration::Invalid) {
             logError("Camera " + std::to_string(camCfg.index) + " config invalid");
             return false;
         }
-        if (vstatus == libcamera::CameraConfiguration::Adjusted)
-            logInfo("Camera " + std::to_string(camCfg.index) + " config adjusted: " +
-                    camConfig->at(0).toString() + " / " + camConfig->at(1).toString());
+        if (vstatus == libcamera::CameraConfiguration::Adjusted) {
+            std::string msg = "Camera " + std::to_string(camCfg.index) + " config adjusted: " +
+                    camConfig->at(0).toString() + " / " + camConfig->at(1).toString();
+            if (haveMid) msg += " / " + camConfig->at(2).toString();
+            logInfo(msg);
+        }
 
         if (camera->configure(camConfig.get())) {
             logError("Camera " + std::to_string(camCfg.index) + " configure failed");
@@ -646,6 +716,10 @@ struct CameraImpl {
         loresLibcam  = camConfig->at(1).stream();
         mainStride_  = camConfig->at(0).stride;
         loresStride_ = camConfig->at(1).stride;
+        if (haveMid) {
+            midLibcam  = camConfig->at(2).stream();
+            midStride_ = camConfig->at(2).stride;
+        }
 
         // validate() may have adjusted the requested sizes to whatever the
         // sensor/ISP actually supports (see the "config adjusted" log
@@ -670,13 +744,27 @@ struct CameraImpl {
         camCfg.mainHeight  = static_cast<int>(mainSize.height);
         camCfg.loresWidth  = static_cast<int>(loresSize.width);
         camCfg.loresHeight = static_cast<int>(loresSize.height);
+        if (haveMid) {
+            const auto& midSize = camConfig->at(2).size;
+            if (static_cast<int>(midSize.width) != camCfg.midWidth ||
+                static_cast<int>(midSize.height) != camCfg.midHeight)
+                logInfo("Camera " + std::to_string(camCfg.index) +
+                        " mid stream resized by libcamera: requested " +
+                        std::to_string(camCfg.midWidth) + "x" + std::to_string(camCfg.midHeight) +
+                        ", actual " + std::to_string(midSize.width) + "x" + std::to_string(midSize.height));
+            camCfg.midWidth  = static_cast<int>(midSize.width);
+            camCfg.midHeight = static_cast<int>(midSize.height);
+        }
 
         logInfo("Camera " + std::to_string(camCfg.index) +
                 " strides: main=" + std::to_string(mainStride_) +
-                " lores=" + std::to_string(loresStride_));
+                " lores=" + std::to_string(loresStride_) +
+                (haveMid ? " mid=" + std::to_string(midStride_) : " mid=(unavailable)"));
 
         allocator = std::make_unique<libcamera::FrameBufferAllocator>(camera);
-        for (auto* s : {mainLibcam, loresLibcam})
+        std::vector<libcamera::Stream*> streamsToAllocate = {mainLibcam, loresLibcam};
+        if (haveMid) streamsToAllocate.push_back(midLibcam);
+        for (auto* s : streamsToAllocate)
             if (allocator->allocate(s) < 0) {
                 logError("Buffer allocation failed"); return false;
             }
@@ -684,11 +772,17 @@ struct CameraImpl {
         const auto& mainBufs  = allocator->buffers(mainLibcam);
         const auto& loresBufs = allocator->buffers(loresLibcam);
         size_t nReqs = std::min(mainBufs.size(), loresBufs.size());
+        const std::vector<std::unique_ptr<libcamera::FrameBuffer>>* midBufs = nullptr;
+        if (haveMid) {
+            midBufs = &allocator->buffers(midLibcam);
+            nReqs   = std::min(nReqs, midBufs->size());
+        }
         for (size_t i = 0; i < nReqs; ++i) {
             auto req = camera->createRequest();
             if (!req) { logError("createRequest failed"); return false; }
             req->addBuffer(mainLibcam,  mainBufs[i].get());
             req->addBuffer(loresLibcam, loresBufs[i].get());
+            if (haveMid) req->addBuffer(midLibcam, (*midBufs)[i].get());
             requests.push_back(std::move(req));
         }
 
@@ -711,12 +805,14 @@ struct CameraImpl {
 
         // Log plane layout once
         if (!planeLayoutLogged_.exchange(true)) {
-            for (auto* lcStream : {mainLibcam, loresLibcam}) {
+            std::vector<std::pair<libcamera::Stream*, const char*>> loggedStreams = {
+                {mainLibcam, "main"}, {loresLibcam, "lores"}};
+            if (midLibcam) loggedStreams.push_back({midLibcam, "mid"});
+            for (auto& [lcStream, lbl] : loggedStreams) {
                 auto* fb = request->findBuffer(lcStream);
                 if (!fb) continue;
-                std::string lbl = (lcStream == mainLibcam) ? "main" : "lores";
                 logInfo("Cam" + std::to_string(camCfg.index) +
-                        " plane layout [" + lbl + "]:");
+                        " plane layout [" + std::string(lbl) + "]:");
                 for (size_t i = 0; i < fb->planes().size(); ++i) {
                     const auto& p = fb->planes()[i];
                     logInfo("  plane[" + std::to_string(i) + "] fd=" +
@@ -857,6 +953,11 @@ struct CameraImpl {
                     camCfg.loresWidth, camCfg.loresHeight,
                     static_cast<int>(loresStride_),
                     loresServer.get());
+        if (midLibcam && midServer)
+            copyAndSend(midLibcam,
+                        camCfg.midWidth, camCfg.midHeight,
+                        static_cast<int>(midStride_),
+                        midServer.get());
 
         request->reuse(libcamera::Request::ReuseBuffers);
         camera->queueRequest(request);
@@ -896,6 +997,7 @@ struct CameraImpl {
 struct CameraManager::Impl {
     std::shared_ptr<UdpRawServer>  mainServer;
     std::shared_ptr<UdpRawServer>  loresServer;
+    std::shared_ptr<UdpRawServer>  midServer;
     std::vector<std::unique_ptr<CameraImpl>> cams;
     std::unique_ptr<libcamera::CameraManager> lcamMgr;
 
@@ -914,6 +1016,7 @@ struct CameraManager::Impl {
             cam->isActive    = (i == g_config.activeCamera);
             cam->mainServer  = mainServer;
             cam->loresServer = loresServer;
+            cam->midServer   = midServer;
             cam->camMgr      = lcamMgr.get();
             if (!cam->start()) {
                 logError("Failed to start camera " + std::to_string(i));
@@ -953,13 +1056,16 @@ struct CameraManager::Impl {
 };
 
 CameraManager::CameraManager(std::shared_ptr<UdpRawServer> mainServer,
-                             std::shared_ptr<UdpRawServer> loresServer)
+                             std::shared_ptr<UdpRawServer> loresServer,
+                             std::shared_ptr<UdpRawServer> midServer)
     : impl_(std::make_unique<Impl>()),
       mainServer_(std::move(mainServer)),
-      loresServer_(std::move(loresServer))
+      loresServer_(std::move(loresServer)),
+      midServer_(std::move(midServer))
 {
     impl_->mainServer  = mainServer_;
     impl_->loresServer = loresServer_;
+    impl_->midServer   = midServer_;
 }
 
 CameraManager::~CameraManager() { stop(); }
@@ -991,6 +1097,8 @@ static bool parseBool(const std::string& v) {
 // per-camera-section default construction needs them too.
 static int g_sharedMainWidth   = 2304;
 static int g_sharedMainHeight  = 1296;
+static int g_sharedMidWidth    = 1920;
+static int g_sharedMidHeight   = 1080;
 static int g_sharedLoresWidth  = 640;
 static int g_sharedLoresHeight = 360;
 
@@ -1030,10 +1138,13 @@ static void loadSharedStreamConfig() {
 
         if      (key == "main_width")     g_sharedMainWidth      = std::stoi(val);
         else if (key == "main_height")    g_sharedMainHeight     = std::stoi(val);
+        else if (key == "mid_width")      g_sharedMidWidth       = std::stoi(val);
+        else if (key == "mid_height")     g_sharedMidHeight      = std::stoi(val);
         else if (key == "lores_width")    g_sharedLoresWidth     = std::stoi(val);
         else if (key == "lores_height")   g_sharedLoresHeight    = std::stoi(val);
         else if (key == "main_port")      g_config.rawMainPort   = std::stoi(val);
         else if (key == "lores_port")     g_config.rawLoresPort  = std::stoi(val);
+        else if (key == "mid_port")       g_config.rawMidPort    = std::stoi(val);
         else if (key == "telemetry_port") g_config.telemetryPort = std::stoi(val);
         else if (key == "command_port")   g_config.commandPort   = std::stoi(val);
     }
@@ -1053,6 +1164,8 @@ static void applyCameraKV(CameraConfig& c, const std::string& rawKey,
     else if (key == "label")        c.label       = val;
     else if (key == "main_width")   c.mainWidth   = std::stoi(val);
     else if (key == "main_height")  c.mainHeight  = std::stoi(val);
+    else if (key == "mid_width")    c.midWidth    = std::stoi(val);
+    else if (key == "mid_height")   c.midHeight   = std::stoi(val);
     else if (key == "lores_width")  c.loresWidth  = std::stoi(val);
     else if (key == "lores_height") c.loresHeight = std::stoi(val);
     else if (key == "framerate")    c.framerate   = std::stoi(val);
@@ -1071,6 +1184,7 @@ static void applyGlobalKV(const std::string& rawKey, const std::string& rawVal) 
 
     if      (key == "raw_main_port")   g_config.rawMainPort   = std::stoi(val);
     else if (key == "raw_lores_port")  g_config.rawLoresPort  = std::stoi(val);
+    else if (key == "raw_mid_port")    g_config.rawMidPort    = std::stoi(val);
     else if (key == "telemetry_port")  g_config.telemetryPort = std::stoi(val);
     else if (key == "command_port")    g_config.commandPort   = std::stoi(val);
     else if (key == "udp_chunk_size")  g_config.udpChunkSize  = std::stoi(val);
@@ -1117,6 +1231,8 @@ static void loadConfigFile(const std::string& path) {
                     def.label = "cam" + std::to_string(camIdx);
                     def.mainWidth   = g_sharedMainWidth;
                     def.mainHeight  = g_sharedMainHeight;
+                    def.midWidth    = g_sharedMidWidth;
+                    def.midHeight   = g_sharedMidHeight;
                     def.loresWidth  = g_sharedLoresWidth;
                     def.loresHeight = g_sharedLoresHeight;
                     camMap[camIdx] = def;
@@ -1182,6 +1298,9 @@ static void printUsage(const char* prog) {
         "  --config PATH         Config file (default: picam_raw.conf)\n"
         "  --raw-main-port N     UDP port for main stream   (default: 8560)\n"
         "  --raw-lores-port N    UDP port for lores stream  (default: 8561)\n"
+        "  --raw-mid-port N      UDP port for mid stream    (default: 8562,\n"
+        "                        only populated if the camera/pipeline\n"
+        "                        handler supports a 3rd simultaneous stream)\n"
         "  --telemetry-port N    Telemetry port             (default: 8555)\n"
         "  --command-port N      Command port               (default: 8556)\n"
         "  --udp-chunk-size N    Bytes per UDP packet       (default: 60000)\n"
@@ -1193,6 +1312,7 @@ static void printUsage(const char* prog) {
         "\n"
         "Per-camera options:\n"
         "  --main-width/height   Main stream resolution\n"
+        "  --mid-width/height    Mid stream resolution (see --raw-mid-port)\n"
         "  --lores-width/height  Lores stream resolution\n"
         "  --framerate N\n"
         "  --hflip/vflip true|false\n"
@@ -1216,6 +1336,8 @@ bool loadConfig(int argc, char* argv[]) {
         CameraConfig def; def.index = 0; def.label = "cam0";
         def.mainWidth   = g_sharedMainWidth;
         def.mainHeight  = g_sharedMainHeight;
+        def.midWidth    = g_sharedMidWidth;
+        def.midHeight   = g_sharedMidHeight;
         def.loresWidth  = g_sharedLoresWidth;
         def.loresHeight = g_sharedLoresHeight;
         g_config.cameras.push_back(def);
@@ -1316,6 +1438,8 @@ int main(int argc, char* argv[]) {
             " (" + sc.label + ")" +
             " main=" + std::to_string(sc.mainWidth) + "x" +
             std::to_string(sc.mainHeight) +
+            " mid=" + std::to_string(sc.midWidth) + "x" +
+            std::to_string(sc.midHeight) + " (if supported, see below)" +
             " lores=" + std::to_string(sc.loresWidth) + "x" +
             std::to_string(sc.loresHeight) +
             " @" + std::to_string(sc.framerate) + "fps");
@@ -1325,8 +1449,10 @@ int main(int argc, char* argv[]) {
 
     // Frame size info
     auto mainFrameBytes  = sc.mainWidth  * sc.mainHeight  * 3 / 2;
+    auto midFrameBytes   = sc.midWidth   * sc.midHeight   * 3 / 2;
     auto loresFrameBytes = sc.loresWidth * sc.loresHeight * 3 / 2;
     auto mainChunks      = (mainFrameBytes  + g_config.udpChunkSize - 1) / g_config.udpChunkSize;
+    auto midChunks       = (midFrameBytes   + g_config.udpChunkSize - 1) / g_config.udpChunkSize;
     auto loresChunks     = (loresFrameBytes + g_config.udpChunkSize - 1) / g_config.udpChunkSize;
 
     logInfo("Frame sizes:");
@@ -1334,6 +1460,10 @@ int main(int argc, char* argv[]) {
             std::to_string(sc.mainHeight)  + " = " +
             std::to_string(mainFrameBytes/1024)  + " KB → " +
             std::to_string(mainChunks)  + " UDP packets/frame");
+    logInfo("  mid   " + std::to_string(sc.midWidth) + "x" +
+            std::to_string(sc.midHeight) + " = " +
+            std::to_string(midFrameBytes/1024) + " KB → " +
+            std::to_string(midChunks) + " UDP packets/frame (if supported, see below)");
     logInfo("  lores " + std::to_string(sc.loresWidth) + "x" +
             std::to_string(sc.loresHeight) + " = " +
             std::to_string(loresFrameBytes/1024) + " KB → " +
@@ -1345,6 +1475,13 @@ int main(int argc, char* argv[]) {
     auto loresServer = std::make_shared<UdpRawServer>(
         g_config.rawLoresPort, g_config.udpChunkSize,
         g_config.clientTimeoutS, "lores");
+    // Started unconditionally -- harmless even if the camera can't
+    // actually produce a third stream on this hardware (see
+    // CameraImpl::setup's graceful-degradation fallback), it just never
+    // gets anything pushed to it in that case.
+    auto midServer   = std::make_shared<UdpRawServer>(
+        g_config.rawMidPort,   g_config.udpChunkSize,
+        g_config.clientTimeoutS, "mid");
 
     TelemetryServer telemetry(g_config.telemetryPort);
     g_telemetry = &telemetry;
@@ -1355,8 +1492,9 @@ int main(int argc, char* argv[]) {
 
     mainServer->start();
     loresServer->start();
+    midServer->start();
 
-    CameraManager cam(mainServer, loresServer);
+    CameraManager cam(mainServer, loresServer, midServer);
     g_switchCamera = [&cam](int idx) { cam.switchTo(idx); };
 
     if (!cam.start()) {
@@ -1368,6 +1506,9 @@ int main(int argc, char* argv[]) {
     logInfo("Streaming raw YUV420:");
     logInfo("  main  UDP :" + std::to_string(g_config.rawMainPort)  +
             "  ← send any datagram to register");
+    logInfo("  mid   UDP :" + std::to_string(g_config.rawMidPort) +
+            "  ← send any datagram to register (only if the camera log above"
+            " confirmed 3-stream support)");
     logInfo("  lores UDP :" + std::to_string(g_config.rawLoresPort) +
             "  ← send any datagram to register");
     logInfo("Telemetry: nc " + ip + " " + std::to_string(g_config.telemetryPort));

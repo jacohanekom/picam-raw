@@ -23,9 +23,18 @@
 // Clients register by sending any UDP datagram to the server port.
 // They are removed after a configurable idle timeout.
 //
-// Two ports are served simultaneously:
+// Up to three ports are served simultaneously:
 //   raw_main_port  — full-res stream  (default 8560)
 //   raw_lores_port — lores stream     (default 8561)
+//   raw_mid_port   — mid stream       (default 8562) -- an optional,
+//                    hardware-dependent third ISP-scaled tap (1920x1080
+//                    by default); not guaranteed on every camera/ISP
+//                    configuration. If the pipeline handler can't
+//                    satisfy 3 simultaneous streams, picam-raw logs
+//                    that clearly at startup and falls back to serving
+//                    just main+lores -- nothing is ever pushed to
+//                    raw_mid_port in that case, but the port itself
+//                    still opens (harmless, just idle).
 //
 // Dependencies:
 //   sudo apt install libcamera-dev
@@ -74,6 +83,14 @@ struct CameraConfig {
     std::string label        = "cam0";
     int         mainWidth    = 2304;
     int         mainHeight   = 1296;
+    // mid is a third, ISP-scaled tap (like lores, not a software
+    // downscale) picam-raw attempts to produce alongside main/lores --
+    // not guaranteed on every camera/ISP configuration; see setup()'s
+    // own comment for the graceful-degradation fallback if the
+    // hardware/pipeline handler can't support a third simultaneous
+    // stream.
+    int         midWidth     = 1920;
+    int         midHeight    = 1080;
     int         loresWidth   = 640;
     int         loresHeight  = 360;
     int         framerate    = 30;
@@ -88,6 +105,7 @@ struct CameraConfig {
 struct Config {
     int rawMainPort    = 8560;
     int rawLoresPort   = 8561;
+    int rawMidPort     = 8562;
     int telemetryPort  = 8555;
     int commandPort    = 8556;
     int udpChunkSize   = 60000;   // bytes of YUV payload per UDP packet
@@ -242,8 +260,13 @@ private:
 
 class CameraManager {
 public:
+    // midServer may be a real server whose port nothing ever gets
+    // pushed to if the camera couldn't set up a third stream (see
+    // CameraImpl::setup's graceful-degradation fallback) -- that's
+    // harmless, just an idle listener.
     CameraManager(std::shared_ptr<UdpRawServer> mainServer,
-                  std::shared_ptr<UdpRawServer> loresServer);
+                  std::shared_ptr<UdpRawServer> loresServer,
+                  std::shared_ptr<UdpRawServer> midServer);
     ~CameraManager();
 
     bool start();
@@ -255,4 +278,5 @@ private:
     std::unique_ptr<Impl>           impl_;
     std::shared_ptr<UdpRawServer>   mainServer_;
     std::shared_ptr<UdpRawServer>   loresServer_;
+    std::shared_ptr<UdpRawServer>   midServer_;
 };
