@@ -28,6 +28,7 @@
 #include <stdexcept>
 #include <string>
 #include <sched.h>
+#include <span>
 #include <sys/mman.h>
 #include <sys/resource.h>
 #include <sys/socket.h>
@@ -791,7 +792,7 @@ struct CameraImpl {
         libcamera::ControlList ctrl(camera->controls());
         int64_t frameDur = 1'000'000LL / camCfg.framerate;
         ctrl.set(libcamera::controls::FrameDurationLimits,
-                 libcamera::Span<const int64_t, 2>({frameDur, frameDur}));
+                 std::span<const int64_t, 2>({frameDur, frameDur}));
         ctrl.set(libcamera::controls::AfMode,
                  libcamera::controls::AfModeContinuous);
         startControls_ = std::move(ctrl);
